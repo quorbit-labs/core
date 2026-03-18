@@ -1,0 +1,39 @@
+QUORBIT Protocol — Legal Notice
+================================
+
+Copyright © 2026 S.N. Panchenko [QB-001] / Quorbit Labs
+Domain: quorbit.network
+
+---
+
+## Open Source Components
+
+The core protocol modules located in `backend/app/bus/` are licensed under
+the GNU Affero General Public License v3.0 (AGPL-3.0).
+
+This includes:
+- Identity management (Ed25519 keypairs, AgentID)
+- Agent registry and discovery
+- Heartbeat and liveness tracking
+- Nonce management and replay protection
+
+---
+
+## Proprietary Components
+
+The AI orchestration layer located in `backend/app/busai/` is PROPRIETARY
+software owned exclusively by S.N. Panchenko [QB-001] / Quorbit Labs.
+
+You may NOT:
+- Copy, modify, or distribute the busai/ module
+- Use it in commercial or non-commercial products without a written license
+- Reverse-engineer or decompile it
+
+To inquire about licensing: legal@quorbit.network
+
+---
+
+## Trademarks
+
+"QUORBIT", "BusAI", and "Quorbit Labs" are unregistered trademarks of
+S.N. Panchenko. Unauthorized use is prohibited.
