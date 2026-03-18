@@ -10,7 +10,7 @@ from __future__ import annotations
 import time
 from dataclasses import dataclass
 
-from .identity import AgentID, verify_signature
+from .identity import AgentID, AgentIdentity, verify_signature
 from .registry import AgentRegistry
 
 
@@ -19,8 +19,9 @@ class HeartbeatMessage:
     """A signed heartbeat payload sent by an agent."""
 
     agent_id: AgentID
+    public_key_hex: str  # raw Ed25519 public key (hex) — required for verification
     timestamp: float
-    signature: bytes  # Ed25519 signature over f"{agent_id}:{timestamp}"
+    signature: bytes     # Ed25519 signature over encode()
 
     def encode(self) -> bytes:
         """Canonical byte representation that was signed."""
@@ -31,7 +32,7 @@ class HeartbeatManager:
     """
     Validates and processes heartbeat messages from agents.
 
-    - Verifies the Ed25519 signature against the AgentID (public key).
+    - Verifies the Ed25519 signature against public_key_hex.
     - Rejects replayed heartbeats (timestamp must be within `max_age` seconds).
     - Updates registry last_seen on success.
     """
@@ -49,39 +50,33 @@ class HeartbeatManager:
         Validate and record a heartbeat. Returns True on success.
 
         Rejects if:
-        - Signature is invalid
         - Timestamp is stale (older than max_age seconds)
+        - Signature is invalid
         - Agent is not registered
         """
-        # 1. Timestamp freshness check
         age = time.time() - msg.timestamp
         if age < 0 or age > self._max_age:
             return False
 
-        # 2. Signature verification
-        if not verify_signature(msg.agent_id, msg.encode(), msg.signature):
+        if not verify_signature(msg.public_key_hex, msg.encode(), msg.signature):
             return False
 
-        # 3. Registry update
-        record = self._registry.get(msg.agent_id)
-        if record is None:
+        if not self._registry.touch(msg.agent_id):
             return False
 
-        record.touch()
         return True
 
-    def build(self, identity: object, timestamp: float | None = None) -> HeartbeatMessage:
-        """
-        Convenience: build and sign a HeartbeatMessage from an AgentIdentity.
-
-        Usage:
-            hb = manager.build(my_identity)
-        """
+    def build(
+        self,
+        identity: AgentIdentity,
+        timestamp: float | None = None,
+    ) -> HeartbeatMessage:
+        """Build and sign a HeartbeatMessage from an AgentIdentity."""
         ts = timestamp if timestamp is not None else time.time()
-        payload = f"{identity.agent_id}:{ts}".encode()  # type: ignore[union-attr]
-        sig = identity.sign(payload)  # type: ignore[union-attr]
+        payload = f"{identity.agent_id}:{ts}".encode()
         return HeartbeatMessage(
-            agent_id=identity.agent_id,  # type: ignore[union-attr]
+            agent_id=identity.agent_id,
+            public_key_hex=identity.public_key_hex,
             timestamp=ts,
-            signature=sig,
+            signature=identity.sign_raw(payload),
         )

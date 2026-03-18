@@ -1,89 +1,184 @@
 """
-QUORBIT Protocol — Nonce Manager (AGPL-3.0)
+QUORBIT Protocol — Nonce Store (AGPL-3.0)
 
-Prevents replay attacks by tracking used nonces per agent.
-A nonce is a (agent_id, nonce_value) pair that must be unique within a TTL window.
+Stateless HMAC-based nonce generation with Redis-backed replay protection.
+Redis DB=1 (isolated, dedicated to nonce tracking).
+
+Nonce token format (colon-separated):
+  {agent_id}:{bucket}:{counter}:{hmac}
+
+  bucket  = floor(timestamp_ms / 30_000)   — 30-second slot
+  counter = random 8-byte hex              — per-nonce uniqueness within a slot
+  hmac    = HMAC-SHA256(server_secret, f"{agent_id}:{bucket}:{counter}")
+
+Verification window: bucket must be within ±1 of the current bucket (±30 s).
+Rate limit:          max 10 successful verifications per second per agent_id.
+Replay protection:   used nonces are recorded in Redis; explicit DEL on revocation.
 """
 
 from __future__ import annotations
 
+import hashlib
+import hmac
+import logging
 import os
 import time
-from collections import defaultdict
-from typing import Dict, Set, Tuple
+from typing import Optional
+
+import redis
+
+logger = logging.getLogger(__name__)
+
+REDIS_DB = 1                 # isolated DB for nonce tracking
+NONCE_PREFIX = "bus:nonce:"
+RATE_PREFIX = "bus:rate:"
+
+BUCKET_WINDOW_MS = 30_000   # 30 seconds per bucket (milliseconds)
+RATE_LIMIT = 10              # max verifications per second per agent_id
+NONCE_TTL = 90               # Redis TTL for used-nonce records (3 buckets)
+
+
+def _bucket(ts_ms: Optional[int] = None) -> int:
+    """Map a millisecond timestamp to a 30-second bucket index."""
+    ms = ts_ms if ts_ms is not None else int(time.time() * 1000)
+    return ms // BUCKET_WINDOW_MS
+
+
+def _compute_hmac(secret: bytes, agent_id: str, bucket: int, counter: str) -> str:
+    """Compute HMAC-SHA256(secret, '{agent_id}:{bucket}:{counter}')."""
+    msg = f"{agent_id}:{bucket}:{counter}".encode()
+    return hmac.new(secret, msg, hashlib.sha256).hexdigest()
+
+
+class NonceError(Exception):
+    """Raised when nonce verification fails for a specific reason."""
 
 
 class NonceManager:
     """
-    Tracks used nonces to prevent replay attacks.
+    Stateless HMAC nonce manager with Redis-backed replay protection.
 
-    Nonces expire after `ttl` seconds, after which the same value may be reused
-    (though agents should not do this in practice — use monotonically increasing nonces).
-
-    Thread-safety: Not thread-safe. Wrap in a lock for concurrent use.
+    Parameters
+    ----------
+    server_secret : bytes | None
+        HMAC secret key (min 32 bytes recommended).
+        Falls back to the NONCE_SECRET environment variable, then a random key.
+    redis_url : str
+        Redis connection string.  DB=1 is selected unconditionally.
     """
 
-    def __init__(self, ttl: float = 300.0) -> None:
-        self._ttl = ttl
-        # agent_id -> set of (nonce, expiry_time)
-        self._store: Dict[str, Set[Tuple[str, float]]] = defaultdict(set)
+    def __init__(
+        self,
+        server_secret: bytes | None = None,
+        redis_url: str = "redis://localhost:6379",
+    ) -> None:
+        env_secret = os.environ.get("NONCE_SECRET", "").encode()
+        self._secret: bytes = server_secret or env_secret or os.urandom(32)
+        self._redis = redis.Redis.from_url(
+            redis_url, db=REDIS_DB, decode_responses=True
+        )
 
     # ── Public API ────────────────────────────────────────────────────────
 
-    @staticmethod
-    def generate() -> str:
-        """Generate a cryptographically random 32-byte nonce (hex string)."""
-        return os.urandom(32).hex()
-
-    def consume(self, agent_id: str, nonce: str) -> bool:
+    def generate(self, agent_id: str, ts_ms: Optional[int] = None) -> str:
         """
-        Attempt to consume a nonce for an agent.
+        Generate a stateless HMAC nonce token for the given agent.
 
-        Returns True if the nonce is fresh (first use within TTL window).
-        Returns False if the nonce was already used or has an invalid format.
+        The nonce is self-authenticating: its HMAC binds it to the agent_id
+        and time bucket, so no server-side state is needed for issuance.
         """
-        if not nonce or len(nonce) > 128:
+        ms = ts_ms if ts_ms is not None else int(time.time() * 1000)
+        bkt = _bucket(ms)
+        counter = os.urandom(8).hex()
+        h = _compute_hmac(self._secret, agent_id, bkt, counter)
+        return f"{agent_id}:{bkt}:{counter}:{h}"
+
+    def verify(self, nonce: str, agent_id: str) -> bool:
+        """
+        Verify a nonce token.
+
+        Checks (in order):
+          1. Parse and structural validity
+          2. agent_id match
+          3. Time window (current bucket within ±1 of nonce bucket)
+          4. HMAC integrity (constant-time comparison)
+          5. Rate limit (max 10 req/s per agent_id)
+          6. Replay detection (not already used)
+          7. Record as used in Redis
+
+        Returns True on success.  Logs a warning and returns False on failure.
+        """
+        parts = nonce.split(":")
+        if len(parts) != 4:
+            logger.warning("Nonce: malformed token for agent %s", agent_id)
             return False
 
-        self._evict_expired(agent_id)
+        nonce_agent_id, bucket_str, counter, received_hmac = parts
 
-        existing_nonces = {n for n, _ in self._store[agent_id]}
-        if nonce in existing_nonces:
-            return False  # Replay detected
+        if nonce_agent_id != agent_id:
+            logger.warning("Nonce: agent_id mismatch (%s vs %s)", nonce_agent_id, agent_id)
+            return False
 
-        expiry = time.time() + self._ttl
-        self._store[agent_id].add((nonce, expiry))
+        try:
+            bkt = int(bucket_str)
+        except ValueError:
+            return False
+
+        current_bkt = _bucket()
+        if abs(current_bkt - bkt) > 1:
+            logger.warning(
+                "Nonce: expired or future bucket for agent %s (delta=%d)",
+                agent_id,
+                current_bkt - bkt,
+            )
+            return False
+
+        expected = _compute_hmac(self._secret, agent_id, bkt, counter)
+        if not hmac.compare_digest(expected, received_hmac):
+            logger.warning("Nonce: HMAC verification failed for agent %s", agent_id)
+            return False
+
+        if not self._check_rate_limit(agent_id):
+            logger.warning("Nonce: rate limit exceeded for agent %s", agent_id)
+            return False
+
+        nonce_key = f"{NONCE_PREFIX}{agent_id}:{bkt}:{counter}"
+        if self._redis.exists(nonce_key):
+            logger.warning("Nonce: replay detected for agent %s", agent_id)
+            return False
+
+        # Mark as used.  TTL covers 3 bucket windows; explicit DEL via revoke().
+        self._redis.set(nonce_key, "1", ex=NONCE_TTL)
         return True
 
-    def is_used(self, agent_id: str, nonce: str) -> bool:
-        """Check if a nonce has already been consumed (without consuming it)."""
-        self._evict_expired(agent_id)
-        return nonce in {n for n, _ in self._store[agent_id]}
+    def revoke(self, nonce: str) -> bool:
+        """
+        Explicitly DELETE a nonce from Redis before its TTL expires.
 
-    def purge(self, agent_id: str) -> int:
-        """Remove all nonces for an agent. Returns count removed."""
-        count = len(self._store.pop(agent_id, set()))
-        return count
-
-    def evict_all_expired(self) -> int:
-        """Evict expired nonces across all agents. Returns total count removed."""
-        total = 0
-        now = time.time()
-        for agent_id in list(self._store.keys()):
-            before = len(self._store[agent_id])
-            self._store[agent_id] = {(n, e) for n, e in self._store[agent_id] if e > now}
-            total += before - len(self._store[agent_id])
-            if not self._store[agent_id]:
-                del self._store[agent_id]
-        return total
-
-    def stats(self) -> Dict[str, int]:
-        """Return per-agent nonce count (after evicting expired entries)."""
-        self.evict_all_expired()
-        return {aid: len(nonces) for aid, nonces in self._store.items()}
+        Use this for early revocation (e.g. session logout, key rotation).
+        Returns True if the key existed and was deleted.
+        """
+        parts = nonce.split(":")
+        if len(parts) != 4:
+            return False
+        agent_id, bkt_str, counter, _ = parts
+        nonce_key = f"{NONCE_PREFIX}{agent_id}:{bkt_str}:{counter}"
+        deleted = self._redis.delete(nonce_key)
+        return bool(deleted)
 
     # ── Internals ─────────────────────────────────────────────────────────
 
-    def _evict_expired(self, agent_id: str) -> None:
-        now = time.time()
-        self._store[agent_id] = {(n, e) for n, e in self._store[agent_id] if e > now}
+    def _check_rate_limit(self, agent_id: str) -> bool:
+        """
+        Sliding per-second rate limiter using Redis INCR.
+
+        Key: bus:rate:{agent_id}:{unix_second}   TTL: 2s (covers clock skew)
+        Returns True if the agent is under the rate limit.
+        """
+        key = f"{RATE_PREFIX}{agent_id}:{int(time.time())}"
+        pipe = self._redis.pipeline()
+        pipe.incr(key)
+        pipe.expire(key, 2)
+        results = pipe.execute()
+        count: int = results[0]
+        return count <= RATE_LIMIT

@@ -25,6 +25,7 @@ classifiers = [
 
 dependencies = [
     "cryptography>=42.0",
+    "redis>=5.0.0",
     "pydantic>=2.6",
     "fastapi>=0.110",
     "uvicorn[standard]>=0.29",
