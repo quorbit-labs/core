@@ -9,13 +9,23 @@ Redis key schema (DB=2):
   bus:reputation:{agent_id}  — String (float), no TTL    (persistent score)
   bus:crl:{key_id}           — String (reason), TTL=key_ttl
   bus:pubkey:{agent_id}      — String (hex),   no TTL    (Ed25519 public key)
+  bus:state:{agent_id}       — String (AgentState), no TTL
+  bus:quarantine_log:{aid}   — String (float timestamp), no TTL
+  bus:shard:{shard_id}       — Set of agent_ids, no TTL
 
 Reconciliation:
   Any entry absent from the Registry must be rejected and trigger an alert.
+
+Sharding:
+  shard_id = HMAC-SHA256(agent_id, server_salt) % num_shards
+  Max 200 agents per shard.
 """
 
 from __future__ import annotations
 
+import enum
+import hashlib
+import hmac
 import logging
 import time
 from dataclasses import dataclass
@@ -27,14 +37,62 @@ from .identity import AgentID, verify_signature
 
 logger = logging.getLogger(__name__)
 
-REDIS_DB = 2           # isolated DB for registry
+REDIS_DB = 2
 CAP_PREFIX = "bus:capability:"
 REP_PREFIX = "bus:reputation:"
 CRL_PREFIX = "bus:crl:"
 PUBKEY_PREFIX = "bus:pubkey:"
+STATE_PREFIX = "bus:state:"
+QUARANTINE_LOG_PREFIX = "bus:quarantine_log:"
+SHARD_PREFIX = "bus:shard:"
 
-CAP_TTL = 300           # seconds — capability hash refreshed on heartbeat
-CRL_TTL = 7 * 24 * 3600  # 7 days — mirrors key TTL
+CAP_TTL = 300
+CRL_TTL = 7 * 24 * 3600
+
+MAX_AGENTS_PER_SHARD = 200
+DEFAULT_NUM_SHARDS = 10
+
+
+# ── Agent state machine ────────────────────────────────────────────────────────
+
+
+class AgentState(str, enum.Enum):
+    """
+    Ordered agent lifecycle states.
+
+    Transitions:
+      PROBATIONARY  → ACTIVE            (eligibility met)
+      ACTIVE        → DEGRADED          (missed heartbeats)
+      ACTIVE        → SOFT_QUARANTINED  (policy violation)
+      DEGRADED      → ACTIVE            (recovered)
+      DEGRADED      → ISOLATED          (continued degradation)
+      ISOLATED      → ACTIVE            (recovered)
+      ISOLATED      → QUARANTINED       (forced by operator/detector)
+      SOFT_QUARANTINED → ACTIVE         (cleared)
+      SOFT_QUARANTINED → QUARANTINED    (escalated)
+      QUARANTINED   → PROBATIONARY      (after key rotation + review)
+    """
+
+    PROBATIONARY = "PROBATIONARY"
+    ACTIVE = "ACTIVE"
+    DEGRADED = "DEGRADED"
+    ISOLATED = "ISOLATED"
+    SOFT_QUARANTINED = "SOFT_QUARANTINED"
+    QUARANTINED = "QUARANTINED"
+
+
+# Valid state transitions
+_VALID_TRANSITIONS: Dict[AgentState, set[AgentState]] = {
+    AgentState.PROBATIONARY:     {AgentState.ACTIVE},
+    AgentState.ACTIVE:           {AgentState.DEGRADED, AgentState.SOFT_QUARANTINED},
+    AgentState.DEGRADED:         {AgentState.ACTIVE, AgentState.ISOLATED},
+    AgentState.ISOLATED:         {AgentState.ACTIVE, AgentState.QUARANTINED},
+    AgentState.SOFT_QUARANTINED: {AgentState.ACTIVE, AgentState.QUARANTINED},
+    AgentState.QUARANTINED:      {AgentState.PROBATIONARY},
+}
+
+
+# ── Data structures ───────────────────────────────────────────────────────────
 
 
 @dataclass
@@ -47,6 +105,7 @@ class AgentRecord:
     registered_at: float
     last_seen: float
     reputation: float = 1.0
+    state: AgentState = AgentState.PROBATIONARY
 
     def touch(self) -> None:
         self.last_seen = time.time()
@@ -59,6 +118,13 @@ class RegistryIntegrityError(Exception):
     """Raised by reconcile() when an agent is absent from the Registry."""
 
 
+class InvalidStateTransitionError(Exception):
+    """Raised when a requested state transition is not allowed."""
+
+
+# ── Registry ──────────────────────────────────────────────────────────────────
+
+
 class AgentRegistry:
     """
     Redis-backed authoritative registry of QUORBIT agents.
@@ -67,12 +133,42 @@ class AgentRegistry:
     ----------
     redis_url : str
         Redis connection string.  DB=2 is selected unconditionally.
+    server_salt : bytes | None
+        Salt used for shard key computation (HMAC-SHA256).
+        If None, sharding uses a zero-salt (not recommended for production).
+    num_shards : int
+        Number of logical shards.  Default 10 → max 2 000 agents.
     """
 
-    def __init__(self, redis_url: str = "redis://localhost:6379") -> None:
+    def __init__(
+        self,
+        redis_url: str = "redis://localhost:6379",
+        server_salt: Optional[bytes] = None,
+        num_shards: int = DEFAULT_NUM_SHARDS,
+    ) -> None:
         self._redis = redis.Redis.from_url(
             redis_url, db=REDIS_DB, decode_responses=True
         )
+        self._salt = server_salt or b"\x00" * 32
+        self._num_shards = num_shards
+
+    # ── Sharding ──────────────────────────────────────────────────────────
+
+    def _shard_id(self, agent_id: AgentID) -> int:
+        """Deterministic shard assignment: HMAC-SHA256(agent_id, salt) % num_shards."""
+        h = hmac.new(self._salt, agent_id.encode(), hashlib.sha256).digest()
+        return int.from_bytes(h[:4], "big") % self._num_shards
+
+    def _shard_key(self, agent_id: AgentID) -> str:
+        return f"{SHARD_PREFIX}{self._shard_id(agent_id)}"
+
+    def shard_count(self, shard_id: int) -> int:
+        """Return the number of agents assigned to a shard."""
+        return self._redis.scard(f"{SHARD_PREFIX}{shard_id}")
+
+    def is_shard_full(self, agent_id: AgentID) -> bool:
+        """True if the target shard already holds MAX_AGENTS_PER_SHARD agents."""
+        return self.shard_count(self._shard_id(agent_id)) >= MAX_AGENTS_PER_SHARD
 
     # ── Registration ──────────────────────────────────────────────────────
 
@@ -92,12 +188,19 @@ class AgentRegistry:
         If *signed_payload* and *signature* are provided, the Ed25519 signature
         is verified against *public_key_hex* before any state is written.
         Raises ValueError on invalid signature.
+        Raises RegistryIntegrityError if the target shard is full.
         """
         if signed_payload is not None and signature is not None:
             if not verify_signature(public_key_hex, signed_payload, signature):
                 raise ValueError(
                     f"Invalid Ed25519 registration signature for agent {agent_id!r}"
                 )
+
+        if not self.is_registered(agent_id) and self.is_shard_full(agent_id):
+            raise RegistryIntegrityError(
+                f"Shard {self._shard_id(agent_id)} is full "
+                f"(max {MAX_AGENTS_PER_SHARD} agents)."
+            )
 
         now = time.time()
         cap_key = f"{CAP_PREFIX}{agent_id}"
@@ -106,6 +209,7 @@ class AgentRegistry:
             "endpoint": endpoint or "",
             "registered_at": str(now),
             "last_seen": str(now),
+            "tasks_completed": "0",
         }
         if capabilities:
             cap_data.update(capabilities)
@@ -114,11 +218,12 @@ class AgentRegistry:
         pipe.set(f"{PUBKEY_PREFIX}{agent_id}", public_key_hex)
         pipe.hset(cap_key, mapping=cap_data)
         pipe.expire(cap_key, CAP_TTL)
-        # Initialise reputation only if it does not exist
         pipe.setnx(f"{REP_PREFIX}{agent_id}", "1.0")
+        pipe.setnx(f"{STATE_PREFIX}{agent_id}", AgentState.PROBATIONARY.value)
+        pipe.sadd(self._shard_key(agent_id), agent_id)
         pipe.execute()
 
-        logger.info("Registry: registered agent %s", agent_id)
+        logger.info("Registry: registered agent %s (shard=%d)", agent_id, self._shard_id(agent_id))
         return AgentRecord(
             agent_id=agent_id,
             name=name,
@@ -126,6 +231,7 @@ class AgentRegistry:
             registered_at=now,
             last_seen=now,
             reputation=1.0,
+            state=AgentState.PROBATIONARY,
         )
 
     def touch(self, agent_id: AgentID) -> bool:
@@ -140,16 +246,66 @@ class AgentRegistry:
         pipe.execute()
         return True
 
+    def increment_tasks(self, agent_id: AgentID, count: int = 1) -> int:
+        """Increment the completed task counter for an agent. Returns new total."""
+        cap_key = f"{CAP_PREFIX}{agent_id}"
+        return int(self._redis.hincrby(cap_key, "tasks_completed", count))
+
     def deregister(self, agent_id: AgentID) -> bool:
         """Remove an agent from the Registry. Returns True if it existed."""
         cap_key = f"{CAP_PREFIX}{agent_id}"
         existed = bool(self._redis.exists(cap_key))
-        self._redis.delete(
-            cap_key,
-            f"{PUBKEY_PREFIX}{agent_id}",
-        )
+        pipe = self._redis.pipeline()
+        pipe.delete(cap_key, f"{PUBKEY_PREFIX}{agent_id}", f"{STATE_PREFIX}{agent_id}")
+        pipe.srem(self._shard_key(agent_id), agent_id)
+        pipe.execute()
         logger.info("Registry: deregistered agent %s (existed=%s)", agent_id, existed)
         return existed
+
+    # ── Agent state machine ───────────────────────────────────────────────
+
+    def get_state(self, agent_id: AgentID) -> AgentState:
+        """Return the current state of an agent. Defaults to PROBATIONARY."""
+        val = self._redis.get(f"{STATE_PREFIX}{agent_id}")
+        if val is None:
+            return AgentState.PROBATIONARY
+        try:
+            return AgentState(val)
+        except ValueError:
+            return AgentState.PROBATIONARY
+
+    def set_state(
+        self,
+        agent_id: AgentID,
+        new_state: AgentState,
+        force: bool = False,
+    ) -> None:
+        """
+        Transition agent_id to new_state.
+
+        Raises InvalidStateTransitionError if the transition is not allowed,
+        unless force=True (operator override).
+
+        QUARANTINE transitions also record a timestamp in quarantine_log.
+        """
+        current = self.get_state(agent_id)
+        if not force and new_state not in _VALID_TRANSITIONS.get(current, set()):
+            raise InvalidStateTransitionError(
+                f"Cannot transition {agent_id!r}: {current} → {new_state}"
+            )
+
+        self._redis.set(f"{STATE_PREFIX}{agent_id}", new_state.value)
+
+        if new_state == AgentState.QUARANTINED:
+            self._redis.set(f"{QUARANTINE_LOG_PREFIX}{agent_id}", str(time.time()))
+            logger.warning("Registry: agent %s → QUARANTINED", agent_id)
+        else:
+            logger.info("Registry: agent %s → %s", agent_id, new_state.value)
+
+    def last_quarantine_at(self, agent_id: AgentID) -> Optional[float]:
+        """Return the Unix timestamp of the agent's most recent quarantine, or None."""
+        val = self._redis.get(f"{QUARANTINE_LOG_PREFIX}{agent_id}")
+        return float(val) if val is not None else None
 
     # ── Reputation ────────────────────────────────────────────────────────
 
@@ -172,12 +328,11 @@ class AgentRegistry:
         reason: str = "revoked",
         ttl: int = CRL_TTL,
     ) -> None:
-        """Add *key_id* to the Certificate Revocation List with an optional reason."""
+        """Add *key_id* to the Certificate Revocation List."""
         self._redis.set(f"{CRL_PREFIX}{key_id}", reason, ex=ttl)
         logger.warning("Registry: key %s added to CRL — %s", key_id, reason)
 
     def is_revoked(self, key_id: str) -> bool:
-        """Return True if *key_id* appears in the CRL."""
         return bool(self._redis.exists(f"{CRL_PREFIX}{key_id}"))
 
     # ── Reconciliation ────────────────────────────────────────────────────
@@ -187,7 +342,6 @@ class AgentRegistry:
         Assert that *agent_id* exists in the Registry.
 
         Raises RegistryIntegrityError (and logs an alert) if not found.
-        Callers must reject the triggering request on this exception.
         """
         if not self.is_registered(agent_id):
             msg = (
@@ -211,17 +365,16 @@ class AgentRegistry:
             registered_at=float(data.get("registered_at", 0)),
             last_seen=float(data.get("last_seen", 0)),
             reputation=self.get_reputation(agent_id),
+            state=self.get_state(agent_id),
         )
 
     def get_public_key(self, agent_id: AgentID) -> Optional[str]:
-        """Return the raw Ed25519 public key (hex) for an agent, or None."""
         return self._redis.get(f"{PUBKEY_PREFIX}{agent_id}")
 
     def is_registered(self, agent_id: AgentID) -> bool:
         return bool(self._redis.exists(f"{CAP_PREFIX}{agent_id}"))
 
     def all(self) -> List[AgentRecord]:
-        """Return all registered agents (Redis SCAN — avoid in hot paths)."""
         records: List[AgentRecord] = []
         for key in self._redis.scan_iter(f"{CAP_PREFIX}*"):
             agent_id = AgentID(key[len(CAP_PREFIX):])
@@ -233,6 +386,10 @@ class AgentRegistry:
     def alive(self, timeout: float = 90.0) -> List[AgentRecord]:
         return [r for r in self.all() if r.is_alive(timeout)]
 
+    def by_state(self, state: AgentState) -> List[AgentRecord]:
+        """Return all agents currently in the given state."""
+        return [r for r in self.all() if r.state == state]
+
     def count(self) -> int:
         return sum(1 for _ in self._redis.scan_iter(f"{CAP_PREFIX}*"))
 
@@ -242,4 +399,4 @@ class AgentRegistry:
         return self.is_registered(agent_id)
 
     def __repr__(self) -> str:
-        return f"AgentRegistry(redis_db={REDIS_DB})"
+        return f"AgentRegistry(redis_db={REDIS_DB}, num_shards={self._num_shards})"
