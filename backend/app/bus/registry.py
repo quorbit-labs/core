@@ -27,6 +27,7 @@ import enum
 import hashlib
 import hmac
 import logging
+import os
 import time
 from dataclasses import dataclass
 from typing import Dict, List, Optional
@@ -149,7 +150,11 @@ class AgentRegistry:
         self._redis = redis.Redis.from_url(
             redis_url, db=REDIS_DB, decode_responses=True
         )
-        self._salt = server_salt or b"\x00" * 32
+        # D20: read salt from env if not explicitly provided
+        if server_salt is None:
+            env_salt = os.environ.get("QUORBIT_SHARD_SALT")
+            server_salt = env_salt.encode() if env_salt else b"\x00" * 32
+        self._salt = server_salt
         self._num_shards = num_shards
 
     # ── Sharding ──────────────────────────────────────────────────────────
@@ -161,6 +166,10 @@ class AgentRegistry:
 
     def _shard_key(self, agent_id: AgentID) -> str:
         return f"{SHARD_PREFIX}{self._shard_id(agent_id)}"
+
+    def get_shard(self, agent_id: AgentID) -> int:
+        """Return the shard ID for agent_id (D20 — public accessor)."""
+        return self._shard_id(agent_id)
 
     def shard_count(self, shard_id: int) -> int:
         """Return the number of agents assigned to a shard."""
@@ -395,41 +404,66 @@ class AgentRegistry:
 
     # ── PROBATIONARY restrictions (D14) ───────────────────────────────────
 
-    def can_receive_tasks(self, agent_id: AgentID) -> bool:
+    def can_receive_tasks(
+        self,
+        agent_id: AgentID,
+        task_priority: Optional[int] = None,
+    ) -> bool:
         """
         Return True iff this agent is eligible to receive task assignments.
 
-        PROBATIONARY agents are restricted to heartbeat-only mode and must
-        NOT be assigned tasks.  Any other non-QUARANTINED active state is
-        permitted.
+        PROBATIONARY agents cannot receive any tasks.
+        QUARANTINED agents cannot receive any tasks.
+        SOFT_QUARANTINED agents (D19) can only receive low-priority tasks
+          (priority <= 3).  Pass task_priority=None to get a blanket False
+          for SOFT_QUARANTINED (safe default when priority is unknown).
         """
         state = self.get_state(agent_id)
+
         if state == AgentState.PROBATIONARY:
             logger.info(
                 "Registry: task assignment rejected for PROBATIONARY agent %s",
                 agent_id,
             )
             return False
+
         if state == AgentState.QUARANTINED:
             logger.warning(
                 "Registry: task assignment rejected for QUARANTINED agent %s",
                 agent_id,
             )
             return False
+
+        if state == AgentState.SOFT_QUARANTINED:
+            # D19 — restricted to low-priority tasks only
+            if task_priority is None or task_priority > 3:
+                logger.info(
+                    "Registry: high-priority task rejected for SOFT_QUARANTINED agent %s "
+                    "(priority=%s)",
+                    agent_id, task_priority,
+                )
+                return False
+            return True
+
         return True
 
-    def assign_task(self, agent_id: AgentID) -> None:
+    def assign_task(
+        self,
+        agent_id: AgentID,
+        task_priority: Optional[int] = None,
+    ) -> None:
         """
         Attempt to mark a task assignment for an agent.
 
-        Raises ValueError if the agent is PROBATIONARY or QUARANTINED,
-        logging the rejection in both cases.
+        Raises ValueError if the agent cannot receive this task,
+        logging the rejection in all cases.
         """
-        if not self.can_receive_tasks(agent_id):
+        if not self.can_receive_tasks(agent_id, task_priority):
             state = self.get_state(agent_id)
             msg = (
                 f"Task assignment rejected: agent {agent_id!r} "
-                f"is in {state.value} state and cannot receive tasks."
+                f"is in {state.value} state and cannot receive this task "
+                f"(priority={task_priority})."
             )
             logger.warning("Registry: %s", msg)
             raise ValueError(msg)
