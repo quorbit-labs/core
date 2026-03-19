@@ -393,6 +393,47 @@ class AgentRegistry:
     def count(self) -> int:
         return sum(1 for _ in self._redis.scan_iter(f"{CAP_PREFIX}*"))
 
+    # ── PROBATIONARY restrictions (D14) ───────────────────────────────────
+
+    def can_receive_tasks(self, agent_id: AgentID) -> bool:
+        """
+        Return True iff this agent is eligible to receive task assignments.
+
+        PROBATIONARY agents are restricted to heartbeat-only mode and must
+        NOT be assigned tasks.  Any other non-QUARANTINED active state is
+        permitted.
+        """
+        state = self.get_state(agent_id)
+        if state == AgentState.PROBATIONARY:
+            logger.info(
+                "Registry: task assignment rejected for PROBATIONARY agent %s",
+                agent_id,
+            )
+            return False
+        if state == AgentState.QUARANTINED:
+            logger.warning(
+                "Registry: task assignment rejected for QUARANTINED agent %s",
+                agent_id,
+            )
+            return False
+        return True
+
+    def assign_task(self, agent_id: AgentID) -> None:
+        """
+        Attempt to mark a task assignment for an agent.
+
+        Raises ValueError if the agent is PROBATIONARY or QUARANTINED,
+        logging the rejection in both cases.
+        """
+        if not self.can_receive_tasks(agent_id):
+            state = self.get_state(agent_id)
+            msg = (
+                f"Task assignment rejected: agent {agent_id!r} "
+                f"is in {state.value} state and cannot receive tasks."
+            )
+            logger.warning("Registry: %s", msg)
+            raise ValueError(msg)
+
     # ── Dunder ────────────────────────────────────────────────────────────
 
     def __contains__(self, agent_id: AgentID) -> bool:
