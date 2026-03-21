@@ -1,0 +1,71 @@
+version: "3.9"
+
+# QUORBIT Protocol — Docker Compose
+# Services: redis, postgres (pgvector), quorbit-api
+# NO Kafka, NO Zookeeper
+
+services:
+
+  redis:
+    image: redis:7-alpine
+    restart: unless-stopped
+    command: redis-server --save 60 1 --loglevel warning
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis_data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 5s
+
+  postgres:
+    image: pgvector/pgvector:pg16
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-quorbit}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-quorbit}
+      POSTGRES_DB: ${POSTGRES_DB:-quorbit}
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      - ./docs/migrations/001_pgvector.sql:/docker-entrypoint-initdb.d/001_pgvector.sql:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-quorbit} -d ${POSTGRES_DB:-quorbit}"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 15s
+
+  api:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    restart: unless-stopped
+    depends_on:
+      redis:
+        condition: service_healthy
+      postgres:
+        condition: service_healthy
+    environment:
+      REDIS_URL: ${REDIS_URL:-redis://redis:6379}
+      POSTGRES_DSN: ${POSTGRES_DSN:-postgresql://quorbit:quorbit@postgres:5432/quorbit}
+      SERVER_SALT: ${SERVER_SALT:?SERVER_SALT is required}
+      SERVER_SECRET: ${SERVER_SECRET:?SERVER_SECRET is required}
+      GENESIS_VALIDATORS: ${GENESIS_VALIDATORS:-}
+      LOG_LEVEL: ${LOG_LEVEL:-INFO}
+    ports:
+      - "8000:8000"
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/health')"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 20s
+
+volumes:
+  redis_data:
+  postgres_data:

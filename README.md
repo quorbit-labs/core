@@ -3,35 +3,119 @@
 > Trust layer for AI agents — decentralized identity, reputation, and consensus.
 
 [![License: AGPL-3.0](https://img.shields.io/badge/License-AGPL%203.0-blue.svg)](LICENSE)
+[![Version](https://img.shields.io/badge/version-0.1.0-blue)](pyproject.toml)
 [![Domain](https://img.shields.io/badge/domain-quorbit.network-green)](https://quorbit.network)
-[![Copyright](https://img.shields.io/badge/copyright-S.N.%20Panchenko%20%5BQB--001%5D-orange)](NOTICE)
+[![Compatible](https://img.shields.io/badge/compatible-MCP%20%7C%20A2A%20%7C%20ATF%20L3--4-purple)](docs/)
+[![Copyright](https://img.shields.io/badge/copyright-Quorbit%20Labs-orange)](NOTICE)
 
 ---
 
 ## Overview
 
-**QUORBIT Protocol** is an open infrastructure layer that enables AI agents to establish verifiable identities, build trust relationships, and reach Byzantine Fault-Tolerant (BFT) consensus — without relying on a central authority.
+**QUORBIT Protocol v0.1.0** is an open infrastructure layer that enables AI agents to establish verifiable identities, build tamper-resistant reputations, and coordinate via Byzantine Fault-Tolerant (BFT) consensus — without relying on a central authority.
 
-The protocol is designed for multi-agent systems where:
-- Agents must prove their identity and actions cryptographically.
-- Reputation must be earned, tamper-resistant, and portable.
-- Coordination must remain live and safe under Byzantine conditions.
+The protocol is compatible with the **Model Context Protocol (MCP)**, **Google Agent-to-Agent (A2A)**, and **Agent Trust Framework (ATF) Levels 3–4**.
 
 ---
 
-## Core Concepts
+## Architecture
 
-### Identity — Ed25519
-Each agent holds a keypair (Ed25519). The public key is the agent's globally unique identity (`AgentID`). All messages and actions are signed, enabling non-repudiation and verification across nodes.
+```
+┌─────────────────────────────────────────────┐
+│              Application Layer               │
+│         (AI agents, dApps, services)         │
+├──────────────────┬──────────────────────────┤
+│  MCP Bridge      │  A2A Bridge               │  ← Sprint 9
+├──────────────────┴──────────────────────────┤
+│           BusAI Layer  [PROPRIETARY]         │  ← Sprint 8
+│  Adaptive parameter engine, 60s observer     │
+├─────────────────────────────────────────────┤
+│         Parallel Discovery  [AGPL]           │  ← Sprint 5–7
+│  3-layer concurrent, Scoring v2, relaxation  │
+├────────────────┬────────────────────────────┤
+│  Anti-gaming   │  Reputation Engine  [AGPL] │  ← Sprint 3
+│  Collusion det │  EMA + pgvector            │
+├────────────────┴────────────────────────────┤
+│         Consensus Layer  [AGPL]              │  ← Sprint 2
+│   BFT, phi-accrual, view-change, election   │
+├─────────────────────────────────────────────┤
+│          Identity Layer  [AGPL]              │  ← Sprint 1
+│  Ed25519, AgentID, nonces, key rotation     │
+└─────────────────────────────────────────────┘
+```
 
-### Reputation — EMA Scoring
-Agents accumulate a reputation score computed via an **Exponential Moving Average (EMA)** over observed behaviors (message validity, uptime, consensus participation). Scores decay over time, rewarding consistent good actors.
+### Core Components
 
-### Consensus — BFT
-Coordination between agents uses a **Byzantine Fault-Tolerant** consensus protocol. The network remains correct as long as fewer than ⌊(n−1)/3⌋ agents are faulty or malicious.
+| Component | Description |
+|---|---|
+| **Ed25519 Identity** | Keypair per agent; `AgentID = SHA256(pubkey)`; all messages signed |
+| **BFT Consensus** | PBFT-inspired; safe under f < n/3 Byzantine faults; phi-accrual failure detection |
+| **EMA Reputation** | `score_t = α·obs_t + (1−α)·score_{t-1}`; EMA window up to 200 events |
+| **Anti-gaming** | Collusion-graph detection, SLA cliff analysis, adaptive weight engine |
+| **Parallel Discovery** | 3-layer (local/gossip/registry); Scoring v2; DEGRADED×0.70 penalty |
+| **CapabilityCard v2.0** | Static (agent-set) + dynamic (system-only); `last_computed_at` |
+| **RobustnessTest** | 5 semantic variants; variance < 0.25 & struct_rate ≥ 0.80 |
+| **BusAI (Proprietary)** | 60s observer; 5 policy rules; bounded parameter adjustment; Merkle audit |
+| **Quarantine** | Three-layer blocklist; 30-day rehabilitation; atomic CAS transitions |
+| **HumanGate** | Rate-limited human review queue; append-only decision log |
+| **Merkle Log** | Append-only audit; every state change and BusAI adjustment recorded |
 
-### BusAI (Proprietary)
-The `busai/` module implements the AI-native routing and orchestration layer. It is **proprietary** — see [NOTICE](NOTICE) and [LICENSE](LICENSE) for terms.
+---
+
+## Sprint Status
+
+| Sprint | Deliverables | Status |
+|--------|-------------|--------|
+| Sprint 1 | Ed25519 identity, nonce management, key rotation, heartbeat | ✅ |
+| Sprint 2 | BFT consensus, phi-accrual failure detector, view-change, election | ✅ |
+| Sprint 3 | EMA reputation, pgvector task embeddings, collusion-graph detection | ✅ |
+| Sprint 4 | Quarantine, HumanGate, Merkle log, admin access | ✅ |
+| Sprint 5 | CapabilityCard v2.0, parallel discovery, Scoring v1, relaxation | ✅ |
+| Sprint 6 | Atomic CAS transitions, SOFT_QUARANTINED, shard salt, task schema | ✅ |
+| Sprint 7 | Scoring v2, `operational_metrics.last_computed_at`, RobustnessTest | ✅ |
+| Sprint 8 | BusAI v1 — adaptive parameter engine (proprietary repo) | ✅ |
+| Sprint 9 | MCP/A2A bridges, Docker, landing page *(this release)* | 🚧 |
+
+---
+
+## Getting Started
+
+```bash
+# Clone
+git clone https://github.com/quorbit-labs/core.git
+cd core
+
+# Configure
+cp .env.example .env
+# Edit .env — set POSTGRES_DSN, SERVER_SALT, GENESIS_VALIDATORS at minimum
+
+# Start all services (Redis + PostgreSQL/pgvector + API)
+docker-compose up -d
+
+# Run tests
+make test
+
+# Tail logs
+make logs
+```
+
+### Local development (no Docker)
+
+```bash
+pip install -e ".[dev]"
+export $(cat .env | xargs)
+pytest tests/
+```
+
+---
+
+## Compatibility
+
+| Standard | Version | Notes |
+|----------|---------|-------|
+| **MCP** (Model Context Protocol) | 2025-11 | `MCPBridge` converts tool manifests → CapabilityCard |
+| **A2A** (Google Agent-to-Agent) | 0.2 | `A2ABridge` converts AgentCard → CapabilityCard |
+| **ATF** (Agent Trust Framework) | Level 3–4 | Ed25519 identity + BFT consensus satisfies L3; EMA reputation satisfies L4 |
 
 ---
 
@@ -39,45 +123,25 @@ The `busai/` module implements the AI-native routing and orchestration layer. It
 
 ```
 quorbit/
-├── backend/
-│   └── app/
-│       ├── bus/          # AGPL — core protocol (identity, registry, heartbeat, nonce)
-│       └── busai/        # PROPRIETARY — AI orchestration layer
+├── backend/app/
+│   ├── bus/          # AGPL — identity, registry, heartbeat, nonce, quarantine
+│   ├── consensus/    # AGPL — BFT, phi-accrual, view-change
+│   ├── reputation/   # AGPL — EMA scoring, pgvector store
+│   ├── anti_gaming/  # AGPL — collusion detection, adaptive weights
+│   ├── capability/   # AGPL — CapabilityCard v2.0
+│   ├── discovery/    # AGPL — parallel discovery, Scoring v2
+│   ├── audit/        # AGPL — Merkle log, admin
+│   ├── bridges/      # AGPL — MCP + A2A bridges
+│   └── busai/        # PROPRIETARY — adaptive parameter engine stub
 ├── docs/
-│   ├── architecture/     # Architecture documentation
-│   └── sprints/          # Sprint plans and notes
-├── pyproject.toml
-├── .env.example
-├── LICENSE
-├── NOTICE
-└── SECURITY.md
-```
-
----
-
-## Development Phases
-
-| Phase | Description | Status |
-|-------|-------------|--------|
-| Phase 0 | Registry and heartbeat stubs | In progress |
-| Sprint 1 | Ed25519 identity + nonce management | Planned |
-| Sprint 2 | Reputation engine (EMA) | Planned |
-| Sprint 3 | BFT consensus layer | Planned |
-
----
-
-## Getting Started
-
-```bash
-# Clone the repository
-git clone https://github.com/quorbit-labs/core.git
-cd core
-
-# Install dependencies
-pip install -e ".[dev]"
-
-# Copy environment config
-cp .env.example .env
+│   ├── architecture/ # Architecture docs
+│   ├── migrations/   # PostgreSQL/pgvector migrations
+│   └── landing/      # quorbit.network landing page
+├── tests/unit/       # Unit test suite
+├── docker-compose.yml
+├── Dockerfile
+├── Makefile
+└── .env.example
 ```
 
 ---
@@ -90,8 +154,8 @@ Found a vulnerability? See [SECURITY.md](SECURITY.md) or email **security@quorbi
 
 ## License
 
-- Core protocol (`bus/`): [AGPL-3.0](LICENSE)
+- Core protocol (`bus/`, `consensus/`, `reputation/`, `anti_gaming/`, `capability/`, `discovery/`, `audit/`, `bridges/`): [AGPL-3.0](LICENSE)
 - AI orchestration layer (`busai/`): Proprietary — see [NOTICE](NOTICE)
 
-Copyright © 2026 **S.N. Panchenko [QB-001] / Quorbit Labs**
+Copyright © 2026 **Quorbit Labs**
 Domain: [quorbit.network](https://quorbit.network)
