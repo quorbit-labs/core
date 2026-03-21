@@ -1,0 +1,184 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>QUORBIT — Trust layer for AI agents</title>
+<style>
+  :root {
+    --bg: #0a0c10; --surface: #111520; --border: #1e2535;
+    --accent: #3b82f6; --accent2: #8b5cf6; --green: #10b981;
+    --text: #e2e8f0; --muted: #64748b; --white: #fff;
+  }
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body { background: var(--bg); color: var(--text); font-family: system-ui, sans-serif; line-height: 1.6; }
+  a { color: var(--accent); text-decoration: none; }
+  a:hover { text-decoration: underline; }
+
+  /* Nav */
+  nav { display: flex; justify-content: space-between; align-items: center;
+        padding: 1.2rem 2rem; border-bottom: 1px solid var(--border); }
+  .logo { font-weight: 700; font-size: 1.2rem; letter-spacing: .05em; color: var(--white); }
+  .logo span { color: var(--accent); }
+  nav a { color: var(--muted); font-size: .9rem; margin-left: 1.5rem; }
+  nav a:hover { color: var(--text); text-decoration: none; }
+
+  /* Hero */
+  .hero { max-width: 860px; margin: 6rem auto 4rem; padding: 0 2rem; text-align: center; }
+  .badge { display: inline-block; background: rgba(59,130,246,.12); border: 1px solid rgba(59,130,246,.3);
+           color: var(--accent); font-size: .78rem; padding: .25rem .75rem; border-radius: 999px; margin-bottom: 1.5rem; }
+  h1 { font-size: clamp(2rem, 5vw, 3.2rem); font-weight: 800; line-height: 1.15; color: var(--white);
+       margin-bottom: 1.2rem; }
+  h1 em { font-style: normal; background: linear-gradient(90deg, var(--accent), var(--accent2));
+          -webkit-background-clip: text; -webkit-text-fill-color: transparent; }
+  .subtitle { font-size: 1.1rem; color: var(--muted); max-width: 560px; margin: 0 auto 2.5rem; }
+  .cta { display: inline-flex; align-items: center; gap: .5rem;
+         background: var(--accent); color: var(--white); font-weight: 600;
+         padding: .75rem 1.75rem; border-radius: 8px; font-size: 1rem; }
+  .cta:hover { background: #2563eb; text-decoration: none; }
+  .cta-sub { display: inline-block; margin-left: 1rem; color: var(--muted); font-size: .9rem; }
+
+  /* Stats bar */
+  .stats { display: flex; justify-content: center; gap: 3rem; padding: 2.5rem 2rem;
+           border-top: 1px solid var(--border); border-bottom: 1px solid var(--border);
+           margin: 0 0 4rem; flex-wrap: wrap; }
+  .stat-val { font-size: 1.6rem; font-weight: 700; color: var(--white); }
+  .stat-lbl { font-size: .8rem; color: var(--muted); text-transform: uppercase; letter-spacing: .05em; }
+
+  /* Section */
+  section { max-width: 1080px; margin: 0 auto 5rem; padding: 0 2rem; }
+  h2 { font-size: 1.6rem; font-weight: 700; color: var(--white); margin-bottom: .5rem; }
+  .section-sub { color: var(--muted); margin-bottom: 2.5rem; }
+
+  /* Pillars */
+  .pillars { display: grid; grid-template-columns: repeat(auto-fit, minmax(280px, 1fr)); gap: 1.5rem; }
+  .pillar { background: var(--surface); border: 1px solid var(--border); border-radius: 12px; padding: 1.75rem; }
+  .pillar-icon { font-size: 1.8rem; margin-bottom: 1rem; }
+  .pillar h3 { font-size: 1.05rem; font-weight: 700; color: var(--white); margin-bottom: .5rem; }
+  .pillar p { font-size: .9rem; color: var(--muted); }
+  .pillar code { font-size: .82rem; color: var(--accent); background: rgba(59,130,246,.08);
+                 padding: .15rem .4rem; border-radius: 4px; }
+
+  /* Compat */
+  .compat { display: flex; gap: 1.5rem; flex-wrap: wrap; }
+  .chip { background: var(--surface); border: 1px solid var(--border); border-radius: 8px;
+          padding: .6rem 1.2rem; font-size: .9rem; display: flex; align-items: center; gap: .5rem; }
+  .chip .dot { width: 8px; height: 8px; border-radius: 50%; background: var(--green); }
+
+  /* How it works */
+  .steps { counter-reset: step; display: grid; gap: 1rem; }
+  .step { background: var(--surface); border: 1px solid var(--border); border-radius: 10px;
+          padding: 1.25rem 1.5rem; display: flex; gap: 1rem; align-items: flex-start; }
+  .step-num { counter-increment: step; content: counter(step);
+              background: rgba(59,130,246,.15); color: var(--accent); border-radius: 6px;
+              width: 2rem; height: 2rem; display: flex; align-items: center; justify-content: center;
+              font-weight: 700; font-size: .9rem; flex-shrink: 0; }
+  .step-body h4 { font-size: .95rem; font-weight: 600; color: var(--white); margin-bottom: .2rem; }
+  .step-body p  { font-size: .85rem; color: var(--muted); }
+
+  /* Footer */
+  footer { border-top: 1px solid var(--border); padding: 2rem; text-align: center;
+           color: var(--muted); font-size: .85rem; }
+  footer a { color: var(--muted); }
+</style>
+</head>
+<body>
+
+<nav>
+  <span class="logo"><span>QUORBIT</span> Protocol</span>
+  <div>
+    <a href="https://github.com/quorbit-labs/core">GitHub</a>
+    <a href="https://github.com/quorbit-labs/core/tree/master/docs">Docs</a>
+    <a href="mailto:security@quorbit.network">Security</a>
+  </div>
+</nav>
+
+<div class="hero">
+  <div class="badge">v0.1.0 — Sprints 1–8 complete</div>
+  <h1>The <em>trust layer</em><br>for AI agents</h1>
+  <p class="subtitle">
+    Verifiable identity, tamper-resistant reputation, and Byzantine Fault-Tolerant
+    consensus — open infrastructure for multi-agent systems.
+  </p>
+  <a class="cta" href="https://github.com/quorbit-labs/core">
+    View on GitHub
+  </a>
+  <span class="cta-sub">AGPL-3.0 · Python 3.11+</span>
+</div>
+
+<div class="stats">
+  <div><div class="stat-val">Ed25519</div><div class="stat-lbl">Identity</div></div>
+  <div><div class="stat-val">BFT</div><div class="stat-lbl">Consensus</div></div>
+  <div><div class="stat-val">EMA</div><div class="stat-lbl">Reputation</div></div>
+  <div><div class="stat-val">8</div><div class="stat-lbl">Sprints shipped</div></div>
+  <div><div class="stat-val">MCP · A2A</div><div class="stat-lbl">Compatible</div></div>
+</div>
+
+<section>
+  <h2>Three pillars of agent trust</h2>
+  <p class="section-sub">Built on cryptography, not configuration.</p>
+  <div class="pillars">
+    <div class="pillar">
+      <div class="pillar-icon">🔑</div>
+      <h3>Identity — Ed25519</h3>
+      <p>
+        Every agent holds an Ed25519 keypair. <code>AgentID = SHA256(pubkey)</code>.
+        All messages are signed — non-repudiation and offline verification
+        without a central authority. Key rotation with 7-day TTL and
+        multi-sig emergency revocation.
+      </p>
+    </div>
+    <div class="pillar">
+      <div class="pillar-icon">⚖️</div>
+      <h3>Reputation — BFT + EMA</h3>
+      <p>
+        Scores computed via Exponential Moving Average over observed
+        behaviours. Network stays correct under <code>f &lt; n/3</code> Byzantine
+        faults. Anti-gaming detects collusion rings, SLA cliff exploitation,
+        and fabricated results with automatic quarantine.
+      </p>
+    </div>
+    <div class="pillar">
+      <div class="pillar-icon">🛡️</div>
+      <h3>Anti-gaming — BusAI</h3>
+      <p>
+        A rule-based adaptive engine (60 s observer) adjusts protocol
+        parameters in bounded ranges — no ML, no black boxes.
+        Every adjustment is written to an append-only Merkle audit log
+        with a <code>rollback_cmd</code>. Immutable core is never touched.
+      </p>
+    </div>
+  </div>
+</section>
+
+<section>
+  <h2>Compatible with your stack</h2>
+  <p class="section-sub">Drop-in bridges — no agent rewrite required.</p>
+  <div class="compat">
+    <div class="chip"><span class="dot"></span> Model Context Protocol (MCP)</div>
+    <div class="chip"><span class="dot"></span> Google Agent-to-Agent (A2A)</div>
+    <div class="chip"><span class="dot"></span> Agent Trust Framework — Level 3–4</div>
+    <div class="chip"><span class="dot"></span> FastAPI · Redis · PostgreSQL/pgvector</div>
+  </div>
+</section>
+
+<section>
+  <h2>Get started in minutes</h2>
+  <p class="section-sub">One command to run the full stack.</p>
+  <div class="steps">
+    <div class="step"><div class="step-num">1</div><div class="step-body"><h4>Clone &amp; configure</h4><p><code>git clone https://github.com/quorbit-labs/core.git &amp;&amp; cp .env.example .env</code></p></div></div>
+    <div class="step"><div class="step-num">2</div><div class="step-body"><h4>Start services</h4><p><code>docker-compose up -d</code> — Redis, PostgreSQL/pgvector, and the QUORBIT API all start with healthchecks.</p></div></div>
+    <div class="step"><div class="step-num">3</div><div class="step-body"><h4>Register your agents</h4><p>Use <code>MCPBridge</code> or <code>A2ABridge</code> to onboard existing MCP servers or A2A agents in one call.</p></div></div>
+    <div class="step"><div class="step-num">4</div><div class="step-body"><h4>Trust, verified</h4><p>Agents earn reputation through observable behaviour. Bad actors are isolated automatically — no manual intervention.</p></div></div>
+  </div>
+</section>
+
+<footer>
+  Copyright &copy; 2026 Quorbit Labs &nbsp;·&nbsp;
+  <a href="https://github.com/quorbit-labs/core/blob/master/LICENSE">AGPL-3.0</a> &nbsp;·&nbsp;
+  <a href="https://quorbit.network">quorbit.network</a> &nbsp;·&nbsp;
+  <a href="mailto:security@quorbit.network">security@quorbit.network</a>
+</footer>
+
+</body>
+</html>
