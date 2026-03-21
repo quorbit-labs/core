@@ -1,3 +1,5 @@
+# Copyright (c) 2026 Quorbit Labs
+# SPDX-License-Identifier: AGPL-3.0-only
 """
 QUORBIT Protocol — CapabilityCard v2.0 (AGPL-3.0) — C1, C2
 
@@ -41,7 +43,8 @@ Dynamic section (system-set only) — C2
   operational_metrics       {task_fit_avg_30d, structured_output_rate,
                               failure_transparency_score, prompt_robustness_score,
                               efficiency_tokens_per_task, tasks_total,
-                              tasks_success_30d, tasks_failed_30d}
+                              tasks_success_30d, tasks_failed_30d,
+                              last_computed_at}
 """
 
 from __future__ import annotations
@@ -110,6 +113,7 @@ _DYNAMIC_DEFAULTS: Dict[str, Any] = {
         "tasks_total": 0,
         "tasks_success_30d": 0,
         "tasks_failed_30d": 0,
+        "last_computed_at": None,
     },
 }
 

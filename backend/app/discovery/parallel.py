@@ -1,5 +1,7 @@
+# Copyright (c) 2026 Quorbit Labs
+# SPDX-License-Identifier: AGPL-3.0-only
 """
-QUORBIT Protocol — Parallel Discovery (AGPL-3.0) — R1, R2, R3
+QUORBIT Protocol — Parallel Discovery (AGPL-3.0) — R1, R2, R3, R9
 
 Three-layer concurrent discovery with merge, dedup, scoring and failover.
 
@@ -23,8 +25,9 @@ Algorithm
   t=8 s, still no candidates
           Emit self_execute(mode=PREPROCESSING) signal.
 
+Scoring v2 (R9) — score_candidate_v2() — identical weights to v1; canonical entry point.
+
 Scoring v1 (R2)
-───────────────
   has_history   (operational_metrics.tasks_total > 20)
     task_fit_avg_30d        × 0.30
     failure_transparency    × 0.15
@@ -269,6 +272,104 @@ def score_candidate(
     raw_score = max(0.0, min(1.0, raw_score))
 
     # DEGRADED penalty
+    penalised = agent_state == "DEGRADED"
+    if penalised:
+        raw_score *= DEGRADED_PENALTY
+
+    return ScoredCandidate(
+        response=response,
+        score=raw_score,
+        mode=mode,
+        penalised=penalised,
+    )
+
+
+# ── Scoring v2 (R9) ───────────────────────────────────────────────────────────
+
+
+def score_candidate_v2(
+    response: "CapabilityResponse",
+    query: "DiscoveryQuery",
+    operational_metrics: Optional[dict] = None,
+    agent_state: str = "ACTIVE",
+    sla_speed_score: float = 0.5,
+) -> "ScoredCandidate":
+    """
+    Scoring v2 (R9) — canonical discovery scorer.
+
+    Modes
+    -----
+    has_history  (operational_metrics.tasks_total > 20)
+        task_fit_avg_30d        × 0.30
+        failure_transparency    × 0.15
+        structured_output_rate  × 0.15
+        capability_vector_match × 0.20
+        reputation_score        × 0.10
+        (1 − current_load)      × 0.05
+        efficiency_score        × 0.05
+
+    cold_start   (tasks_total ≤ 20)
+        capability_vector_match × 0.40
+        reputation_score        × 0.35
+        (1 − current_load)      × 0.15
+        sla_speed_score         × 0.10
+
+    DEGRADED state penalty: final_score × 0.70
+
+    Parameters
+    ----------
+    response : CapabilityResponse
+        Candidate capability response (load, reputation, etc.).
+    query : DiscoveryQuery
+        Originating query (required_skills for cap_match).
+    operational_metrics : dict | None
+        ``operational_metrics`` from the candidate's CapabilityCard.
+        When None or tasks_total ≤ 20, cold_start mode is used.
+    agent_state : str
+        Registry state of the candidate (e.g. "ACTIVE", "DEGRADED").
+    sla_speed_score : float
+        SLA speed score used in cold_start mode.
+
+    Returns
+    -------
+    ScoredCandidate
+        Scored candidate with mode and penalty flag populated.
+    """
+    metrics = operational_metrics or {}
+    tasks_total = int(metrics.get("tasks_total", 0))
+    has_history = tasks_total > HAS_HISTORY_THRESHOLD
+
+    cap_match = float(response.capability_match_score)
+    reputation = float(response.reputation_score)
+    load = max(0.0, min(1.0, float(response.load)))
+
+    if has_history:
+        task_fit  = float(metrics.get("task_fit_avg_30d", 0.0))
+        fail_trans = float(metrics.get("failure_transparency_score", 0.5))
+        struct_out = float(metrics.get("structured_output_rate", 0.0))
+        efficiency = _efficiency_score(metrics)
+
+        raw_score = (
+            task_fit      * W_TASK_FIT
+            + fail_trans  * W_FAIL_TRANS
+            + struct_out  * W_STRUCT_OUT
+            + cap_match   * W_CAP_MATCH
+            + reputation  * W_REPUTATION
+            + (1 - load)  * W_LOAD
+            + efficiency  * W_EFFICIENCY
+        )
+        mode = "has_history"
+    else:
+        raw_score = (
+            cap_match         * W_CS_CAP_MATCH
+            + reputation      * W_CS_REPUTATION
+            + (1 - load)      * W_CS_LOAD
+            + sla_speed_score * W_CS_SLA_SPEED
+        )
+        mode = "cold_start"
+
+    raw_score = max(0.0, min(1.0, raw_score))
+
     penalised = agent_state == "DEGRADED"
     if penalised:
         raw_score *= DEGRADED_PENALTY
