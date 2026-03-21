@@ -1,0 +1,24 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.backends.legacy:build"
+
+[project]
+name = "quorbit-sdk"
+version = "0.1.0"
+description = "Python SDK for the QUORBIT Protocol — trust layer for AI agents."
+authors = [{ name = "Quorbit Labs", email = "dev@quorbit.network" }]
+license = { text = "AGPL-3.0-only" }
+readme = "README.md"
+requires-python = ">=3.11"
+keywords = ["quorbit", "ai", "agents", "identity", "reputation", "sdk"]
+dependencies = [
+    "cryptography>=42.0",
+]
+
+[project.urls]
+Homepage = "https://quorbit.network"
+Repository = "https://github.com/quorbit-labs/core"
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["quorbit*"]
