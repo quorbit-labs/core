@@ -1,6 +1,6 @@
 # QUORBIT — Модели и сеть
-## Текущее состояние и решения
-## 2026-03-28 (обновлено)
+## Quick reference: агенты, ключи, порты, статусы
+## 2026-03-29 (обновлено)
 
 ---
 
@@ -66,19 +66,21 @@
 
 ---
 
-## VPN/Location — решённые проблемы
+## BUSAI — ПАРАМЕТРЫ
 
-- Groq: работает (раньше блокировал датацентровые IP)
-- Docker DNS: решено через dns: 8.8.8.8 в docker-compose
-- Ollama из Docker: НЕ решено (host.docker.internal), приоритет НИЗКИЙ
+| Параметр | Диапазон | Default | Что регулирует |
+|----------|---------|---------|----------------|
+| collusion_graph_weight | [10, 70] | 30 | Вес коллюзионного графа |
+| graph_symmetry_weight | [10, 70] | 30 | Вес симметрии графа |
+| sla_cliff_weight | [10, 70] | 30 | Вес SLA cliff |
+| humangate_rate_limit | [5, 50] | 20 | Rate limit HumanGate |
+| discovery_relaxation_ttl | [1.0, 3.0] | 1.0 | TTL relaxation discovery |
+| reputation_ema_window | [50, 200] | 100 | Окно EMA репутации |
 
----
-
-## Локальные модели
-
-- Ollama установлен, llama3.2:1b скачан
-- НЕ используется (Docker DNS проблема)
-- Приоритет: НИЗКИЙ (4 cloud-агента достаточно)
+**Immutable (NEVER adjusted):** quorum_formula, quarantine_threshold, identity, genesis_config
+**Poll interval:** 60 секунд
+**Cooldown:** 15 min между adjustments одного параметра
+**Freeze:** 1h если >3 adjustments за 30 min
 
 ---
 
@@ -87,29 +89,45 @@
 | Сервис | PromptForge | QUORBIT | FreeAPIRadar |
 |--------|-------------|---------|--------------|
 | Frontend | 3000 | — | GitHub Pages |
-| Backend API | 8000 | 8001 | GitHub Actions |
-| Redis | 6379 | 6380 | — |
+| Backend API | 8000 | 8001 (→8000 internal) | GitHub Actions |
+| Redis | 6379 | 6380 (→6379 internal) | — |
 | PostgreSQL | — | 5432 | — |
 | Ollama | 11434 (host) | — | — |
+
+**Примечание:** QUORBIT docker-compose маппит 8001→8000 (host→container). Dockerfile EXPOSE 8000. API доступен на localhost:8001.
+
+---
+
+## РЕШЁННЫЕ ПРОБЛЕМЫ
+
+- Groq: работает (раньше блокировал датацентровые IP)
+- Docker DNS: решено через `dns: 8.8.8.8` в docker-compose
+- Ollama из Docker: НЕ решено (host.docker.internal), приоритет НИЗКИЙ
+- Криптография: `cryptography` (hazmat Ed25519) — canonical, не PyNaCl
 
 ---
 
 ## ДЕЙСТВИЯ (по приоритету)
 
 ### Сделано ✅:
-1. ✅ DeepSeek агент добавлен (баланс=0)
-2. ✅ Grok/xAI агент добавлен (нет кредитов)
-3. ✅ Cerebras + SambaNova — работают, бесплатно
-4. ✅ FreeAPIRadar MVP на GitHub
-5. ✅ Telegram-бот работает
-6. ✅ GitHub Actions + Secrets настроены
+1. ✅ Все 10 агентов добавлены в PromptForge
+2. ✅ Cerebras + SambaNova — работают, бесплатно
+3. ✅ FreeAPIRadar MVP на GitHub
+4. ✅ Telegram-бот работает
+5. ✅ GitHub Actions + Secrets настроены
+6. ✅ TELEGRAM_BOT_TOKEN в GitHub Secrets
+7. ✅ Show HN + Reddit посты подготовлены
+8. ✅ BusAI Sprint 8 complete (engine + cooldown)
 
 ### Осталось:
-7. ⬜ Зарегистрироваться: Cohere, Fireworks → ключи в Secrets
-8. ⬜ DeepSeek: положить $1-2 → починить агента
-9. ⬜ Show HN + Reddit пост
-10. ⬜ E2E demo: Radar → QUORBIT → PromptForge
+9. ⬜ Зарегистрироваться: Cohere, Fireworks → ключи в Secrets
+10. ⬜ DeepSeek: положить $1-2 → починить агента
+11. ⬜ Опубликовать Show HN + Reddit посты
+12. ⬜ Sprint 10 QUORBIT: запуск e2e_demo.py с Docker
+13. ⬜ E2E demo: Radar → QUORBIT → PromptForge
+14. ⬜ PromptForge: дебаг новых агентов (не отображают ответы)
 
 ---
 
-*Документ обновлён: 2026-03-28*
+*Документ обновлён: 2026-03-29*
+*Copyright (c) 2026 Quorbit Labs*
